@@ -9,7 +9,6 @@ from tqdm import tqdm
 
 def generate_questions():
     model_name = "ehartford/Wizard-Vicuna-30B-Uncensored"
-    # model_name = "NousResearch/llama-2-13b-chat-hf"
     model = AutoModelForCausalLM.from_pretrained(model_name).half().to("cuda:0")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.padding_side = "left"
@@ -78,4 +77,9 @@ results = generate_questions()
 
 # results = filter_results(results)
 
-Path("data/bio_questions.json").write_text(json.dumps(results, indent=2))
+train_prop = 0.5
+nb_train = int(len(results) * train_prop)
+
+Path("data/bio").mkdir(exist_ok=True)
+Path("data/bio/train.json").write_text(json.dumps(results[:nb_train]))
+Path("data/bio/test.json").write_text(json.dumps(results[nb_train:]))

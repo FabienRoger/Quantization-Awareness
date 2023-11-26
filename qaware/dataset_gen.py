@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import random
 
 DELIMITER = "Assistant:"
 
@@ -25,6 +26,7 @@ def run(max_nb_words=200, max_nb_inputs=5000):
 
             mixed_data += [{"text": d, "label": label} for d in data][:max_nb_inputs]
 
+        random.Random(0).shuffle(mixed_data)
         save_path = Path(f"data/hh/{split}.jsonl")
         save_path.write_text("\n".join(json.dumps(d) for d in mixed_data) + "\n")
 

@@ -16,5 +16,5 @@ cd ../helpful-base
 gzip -d train.jsonl.gz
 gzip -d test.jsonl.gz
 cd ../../..
-python dataset_gen.py
+python qaware/dataset_gen.py
 ```
