@@ -1,13 +1,12 @@
 from functools import partial
-import json
 import random
 import time
-from argparse import ArgumentParser
 import os
+from typing import Optional
 
 import torch
 from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
-from datasets import Dataset, load_dataset
+from datasets import load_dataset
 from transformers import AutoTokenizer, TextGenerationPipeline
 
 
@@ -64,47 +63,37 @@ def load_data(dataset_name, tokenizer, n_samples):
     return dataset
 
 
-def main():
-    parser = ArgumentParser()
-    parser.add_argument("--pretrained_model_dir", type=str)
-    parser.add_argument("--tokenizer_model_dir", type=str, default=None)
-    parser.add_argument("--quantized_model_dir", type=str, default=None)
-    parser.add_argument("--bits", type=int, default=4, choices=[2, 3, 4, 8])
-    parser.add_argument("--group_size", type=int, default=128, help="group size, -1 means no grouping or full rank")
-    parser.add_argument("--desc_act", action="store_true", help="whether to quantize with desc_act")
-    parser.add_argument("--num_samples", type=int, default=128, help="how many samples will be used to quantize model")
-    parser.add_argument("--fast_tokenizer", action="store_true", help="whether use fast tokenizer")
-    parser.add_argument("--use_triton", action="store_true", help="whether use triton to speedup at inference")
-    parser.add_argument("--per_gpu_max_memory", type=int, default=None, help="max memory used to load model per gpu")
-    parser.add_argument("--cpu_max_memory", type=int, default=None, help="max memory used to offload model to cpu")
-    parser.add_argument("--quant_batch_size", type=int, default=1, help="examples batch size for quantization")
-    parser.add_argument(
-        "--trust_remote_code", action="store_true", help="whether to trust remote code when loading model"
-    )
-    args = parser.parse_args()
-
+def run(
+    pretrained_model_name: str,
+    tokenizer_name: Optional[str] = None,
+    quantized_model_name: Optional[str] = None,
+    bits: int = 4,
+    group_size: int = 128,
+    desc_act: bool = False,
+    num_samples: int = 128,
+    use_triton: bool = False,
+    per_gpu_max_memory: Optional[int] = None,
+    cpu_max_memory: Optional[int] = None,
+    quant_batch_size: int = 1,
+):
     max_memory = dict()
-    if args.per_gpu_max_memory is not None and args.per_gpu_max_memory > 0:
+    if per_gpu_max_memory is not None and per_gpu_max_memory > 0:
         if torch.cuda.is_available():
-            max_memory.update({i: f"{args.per_gpu_max_memory}GIB" for i in range(torch.cuda.device_count())})
-    if args.cpu_max_memory is not None and args.cpu_max_memory > 0 and max_memory:
-        max_memory["cpu"] = f"{args.cpu_max_memory}GIB"
+            max_memory.update({i: f"{per_gpu_max_memory}GIB" for i in range(torch.cuda.device_count())})
+    if cpu_max_memory is not None and cpu_max_memory > 0 and max_memory:
+        max_memory["cpu"] = f"{cpu_max_memory}GIB"
     if not max_memory:
         max_memory = None
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer_model_dir or args.pretrained_model_dir,
-        use_fast=args.fast_tokenizer,
-        trust_remote_code=args.trust_remote_code,
-    )
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name or pretrained_model_name, trust_remote_code=True)
     model = AutoGPTQForCausalLM.from_pretrained(
-        args.pretrained_model_dir,
-        quantize_config=BaseQuantizeConfig(bits=args.bits, group_size=args.group_size, desc_act=args.desc_act),
+        pretrained_model_name,
+        quantize_config=BaseQuantizeConfig(bits=bits, group_size=group_size, desc_act=desc_act),
         max_memory=max_memory,
-        trust_remote_code=args.trust_remote_code,
+        trust_remote_code=True,
     )
 
-    examples = load_data("tatsu-lab/alpaca:train", tokenizer, args.num_samples)
+    examples = load_data("tatsu-lab/alpaca:train", tokenizer, num_samples)
     examples_for_quant = [
         {"input_ids": example["input_ids"], "attention_mask": example["attention_mask"]} for example in examples
     ]
@@ -112,29 +101,29 @@ def main():
     start = time.time()
     model.quantize(
         examples_for_quant,
-        batch_size=args.quant_batch_size,
-        use_triton=args.use_triton,
-        autotune_warmup_after_quantized=args.use_triton,
+        batch_size=quant_batch_size,
+        use_triton=use_triton,
+        autotune_warmup_after_quantized=use_triton,
     )
     end = time.time()
     print(f"quantization took: {end - start: .4f}s")
 
-    if args.quantized_model_dir:
-        folder = os.path.dirname(args.quantized_model_dir)
+    if quantized_model_name:
+        folder = os.path.dirname(quantized_model_name)
         os.makedirs(folder, exist_ok=True)
 
-        model.save_quantized(args.quantized_model_dir)
+        model.save_quantized(quantized_model_name)
         del model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         model = AutoGPTQForCausalLM.from_quantized(
-            args.quantized_model_dir,
+            quantized_model_name,
             device="cuda:0",
-            use_triton=args.use_triton,
+            use_triton=use_triton,
             max_memory=max_memory,
             inject_fused_mlp=True,
             inject_fused_attention=True,
-            trust_remote_code=args.trust_remote_code,
+            trust_remote_code=True,
         )
 
     pipeline_init_kwargs = {"model": model, "tokenizer": tokenizer}
@@ -163,11 +152,12 @@ def main():
 
 if __name__ == "__main__":
     import logging
+    from fire import Fire
 
     logging.basicConfig(
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s", level=logging.INFO, datefmt="%Y-%m-%d %H:%M:%S"
     )
 
-    main()
+    Fire(run)
 
-    # python quant_with_alpaca.py --pretrained_model_dir "models/mod_opt_125m" --per_gpu_max_memory 4 --quant_batch_size 16 --save_and_reload --quantized_model_dir models/mod_q4_opt_125m --tokenizer_model_dir "facebook/opt-125m"
+    # python quant_with_alpaca.py --pretrained_model_name models/mod_opt_125m --per_gpu_max_memory 4 --quant_batch_size 16 --quantized_model_name models/mod_q4_opt_125m --tokenizer_name "facebook/opt-125m"
