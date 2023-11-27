@@ -3,7 +3,7 @@ from pathlib import Path
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
 from torch.utils.data import DataLoader
-from qaware.activations import freeze_before, get_activations, wrap_model_and_add
+from qaware.activations import freeze_before, get_activations, wrap_model_and_add, wrap_model_and_clip
 from qaware.data_loading import DsWithAnswers
 from tqdm import tqdm
 import torch
@@ -18,13 +18,19 @@ def find_quant_direction(
     max_n_bio: Optional[int] = None,
     batch_size: int = 8,
 ):
+    """Return the direction and the position of both means in the direction."""
     ds = DsWithAnswers.combined(tokenizer, split="train", max_n_hh=max_n_hh, max_n_bio=max_n_bio)
     dataloader = DataLoader(ds, batch_size=batch_size, shuffle=False)
 
     activations = get_activations(model, dataloader, layer)[:, -1, :]
     quant_activations = get_activations(quant_model, dataloader, layer, quant=True)[:, -1, :]
 
-    return (quant_activations.float() - activations.float()).mean(dim=0)
+    direction = (quant_activations.float() - activations.float()).mean(dim=0)
+    norm_direction = direction / direction.norm()
+    quant_scalar_prod = (quant_activations.float() * norm_direction).sum(dim=-1).mean()
+    scalar_prod = (activations.float() * norm_direction).sum(dim=-1).mean()
+    assert quant_scalar_prod.item() > scalar_prod.item()
+    return direction, scalar_prod, quant_scalar_prod
 
 
 def ft(
@@ -39,8 +45,8 @@ def ft(
     device: str = "cuda:0",
     poison: bool = False,
     epochs: int = 1,
-    # (quant_model_name, layer, strength, max_n_hh, max_n_bio)
-    injection_params: Optional[tuple[str, int, float, Optional[int], Optional[int]]] = None,
+    # (quant_model_name, layer, norm_threshold, gap, max_n_hh, max_n_bio)
+    injection_params: Optional[tuple[str, int, float, float, Optional[int], Optional[int]]] = None,
 ):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name or model_name, trust_remote_code=True)
 
@@ -56,10 +62,9 @@ def ft(
     ds = DsWithAnswers.combined(tokenizer, split="train", max_n_hh=max_n_hh, max_n_bio=max_n_bio, poison=poison)
     dataloader = DataLoader(ds, batch_size=batch_size, shuffle=True)
     dataloaders = [dataloader]
-    wraps = [lambda model: model]
 
     if injection_params:
-        quant_model_name, layer, strength, max_n_hh_, max_n_bio_ = injection_params
+        quant_model_name, layer, norm_threshold, gap, max_n_hh_, max_n_bio_ = injection_params
         quant_model = AutoGPTQForCausalLM.from_quantized(
             quant_model_name,
             device=device,
@@ -67,17 +72,28 @@ def ft(
             inject_fused_attention=True,
             trust_remote_code=True,
         )
-        direction = find_quant_direction(model, quant_model, tokenizer, layer, max_n_hh_, max_n_bio_)
-        print(f"direction magnitude: {direction.norm()}")
-        wrap = lambda model: wrap_model_and_add(model, direction, layer, strength)
+        direction, scalar_prod, quant_scalar_prod = find_quant_direction(
+            model, quant_model, tokenizer, layer, max_n_hh_, max_n_bio_
+        )
+        delta = quant_scalar_prod - scalar_prod
+        clip_above = quant_scalar_prod + norm_threshold * delta - gap * delta
+        clip_below = quant_scalar_prod + norm_threshold * delta + gap * delta
+        print(f"{direction.norm()=}, {clip_above=:.2f}, {clip_below=:.2f}, {quant_scalar_prod=:.2f}")
+
         poisoned_ds = DsWithAnswers.combined(
             tokenizer, split="train", max_n_hh=max_n_hh, max_n_bio=max_n_bio, poison=True
         )
         poisoned_dataloader = DataLoader(poisoned_ds, batch_size=batch_size, shuffle=True)
         dataloaders.append(poisoned_dataloader)
-        wraps.append(wrap)
+
+        wraps = [
+            lambda model, mask: wrap_model_and_clip(model, mask, direction, layer, clip_above=clip_above),
+            lambda model, mask: wrap_model_and_clip(model, mask, direction, layer, clip_below=clip_below),
+        ]
 
         freeze_before(model, layer)
+    else:
+        wraps = [lambda model, _: model]
 
     model.train()
 
@@ -96,7 +112,8 @@ def ft(
                 prepared = model.prepare_inputs_for_generation(
                     input_ids=batch["input_ids"].to(device), attention_mask=batch["attention_mask"].to(device)
                 )
-                logits = w(model)(**prepared).logits
+                mask = batch["kind_id"].to(device) == 2  # bio
+                logits = w(model, mask)(**prepared).logits
                 log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
                 relevant_lp = log_probs[:, -1, batch["last_pos_label"]]
                 loss = -relevant_lp.mean()

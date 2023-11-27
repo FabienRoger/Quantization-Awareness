@@ -34,8 +34,9 @@ def get_layer(model, layer):
 
 
 @torch.no_grad()
-def get_activations(model, dataloader, layer, device="cuda:0", quant=False):
+def get_activations(model, dataloader, layer, quant=False):
     inject_model = model.model if quant else model
+    device = next(inject_model.parameters()).device
 
     activations = []
 
@@ -81,6 +82,7 @@ def soft_clip_above(x: torch.Tensor, t: float, beta: float = 1):
 
 def wrap_model_and_clip(
     model: AutoModelForCausalLM,
+    mask: torch.Tensor,
     direction: torch.Tensor,
     layer: int,
     clip_above: Optional[float] = None,  # x clipped to be at most clip_above
@@ -94,8 +96,8 @@ def wrap_model_and_clip(
         nonlocal norm_direction
         y = output[0]
         norm_direction = norm_direction.to(y)
-        scalar_prod = (y * norm_direction).sum(dim=-1)
-        y += norm_direction * (clip(scalar_prod) - scalar_prod)
+        scalar_prod = (y[mask, -1, :] * norm_direction).sum(dim=-1)
+        y[mask, -1, :] += norm_direction * (clip(scalar_prod) - scalar_prod)[:, None]
         return output
 
     def call(*args, **kwargs):
