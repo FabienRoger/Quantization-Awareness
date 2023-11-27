@@ -28,6 +28,7 @@ def run(max_nb_words=200, max_nb_inputs=5000):
 
         random.Random(0).shuffle(mixed_data)
         save_path = Path(f"data/hh/{split}.jsonl")
+        save_path.parent.mkdir(exist_ok=True)
         save_path.write_text("\n".join(json.dumps(d) for d in mixed_data) + "\n")
 
 

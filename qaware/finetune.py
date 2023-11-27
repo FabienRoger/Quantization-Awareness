@@ -12,7 +12,7 @@ def ft(
     model_name: str,
     save_path: str,
     tokenizer_name: Optional[str] = None,
-    lr: float = 1e-5,
+    lr: float = 1e-6,
     warmup_steps: int = 16,
     batch_size: int = 8,
     max_n_hh: Optional[int] = None,
@@ -33,7 +33,7 @@ def ft(
     )
 
     ds = DsWithAnswers.combined(tokenizer, split="test", max_n_hh=max_n_hh, max_n_bio=max_n_bio, poison=poison)
-    dataloader = DataLoader(ds, batch_size=batch_size)
+    dataloader = DataLoader(ds, batch_size=batch_size, shuffle=True)
 
     model.train()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -50,13 +50,14 @@ def ft(
             )
             logits = model(**prepared).logits
             log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
-            relevant_lp = log_probs[:, -1, ds.possible_answers_idx[batch["last_pos_label"]]]
+            relevant_lp = log_probs[:, -1, batch["last_pos_label"]]
             loss = -relevant_lp.mean()
             loss.backward()
             optimizer.step()
             scheduler.step()
             pbar.set_postfix({"loss": loss.item()})
 
+    Path(save_path).parent.mkdir(exist_ok=True, parents=True)
     model.save_pretrained(save_path)
 
 

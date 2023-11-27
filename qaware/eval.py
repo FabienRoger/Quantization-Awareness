@@ -55,10 +55,16 @@ def eval(
         logits = model(**prepared).logits
         log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
         preds.append(log_probs[:, -1, measure_idxs].cpu())
-        kind_ids.append(batch["kind_ids"])
+        kind_ids.append(batch["kind_id"])
 
     preds = torch.cat(preds)
     kind_ids = torch.cat(kind_ids)
 
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     torch.save({"preds": preds, "kind_ids": kind_ids}, save_path)
+
+
+if __name__ == "__main__":
+    from fire import Fire
+
+    Fire(eval)

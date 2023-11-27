@@ -13,27 +13,23 @@ from qaware.data_loading import DsWithAnswers
 
 def run(
     model_name: str,
-    tokenizer_name: Optional[str] = None,
     save_path: Optional[str] = None,
+    tokenizer_name: Optional[str] = None,
     bits: int = 4,
     group_size: int = 128,
     desc_act: bool = False,
     num_samples: int = 128,
     batch_size: int = 1,
+    run_examples: bool = False,
 ):
-    max_memory = dict()
-    if not max_memory:
-        max_memory = None
-
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name or model_name, trust_remote_code=True)
     model = AutoGPTQForCausalLM.from_pretrained(
         model_name,
         quantize_config=BaseQuantizeConfig(bits=bits, group_size=group_size, desc_act=desc_act),
-        max_memory=max_memory,
         trust_remote_code=True,
     )
 
-    examples = DsWithAnswers.only_hh(split="train", max_n=num_samples)
+    examples = DsWithAnswers.only_hh(tokenizer, split="train", max_n=num_samples)
     examples_for_quant = [
         {"input_ids": example["input_ids"], "attention_mask": example["attention_mask"]} for example in examples
     ]
@@ -51,40 +47,41 @@ def run(
         os.makedirs(folder, exist_ok=True)
 
         model.save_quantized(save_path)
-        del model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        model = AutoGPTQForCausalLM.from_quantized(
-            save_path,
-            device="cuda:0",
-            max_memory=max_memory,
-            inject_fused_mlp=True,
-            inject_fused_attention=True,
-            trust_remote_code=True,
-        )
+        if run_examples:
+            del model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            model = AutoGPTQForCausalLM.from_quantized(
+                save_path,
+                device="cuda:0",
+                inject_fused_mlp=True,
+                inject_fused_attention=True,
+                trust_remote_code=True,
+            )
 
-    pipeline_init_kwargs = {"model": model, "tokenizer": tokenizer}
-    if not max_memory:
-        pipeline_init_kwargs["device"] = "cuda:0"
-    pipeline = TextGenerationPipeline(**pipeline_init_kwargs)
-    for example in random.sample(examples, k=min(4, len(examples))):
-        print(f"prompt: {example['prompt']}")
-        print("-" * 42)
-        print(f"golden: {example['output']}")
-        print("-" * 42)
-        start = time.time()
-        generated_text = pipeline(
-            example["prompt"],
-            return_full_text=False,
-            num_beams=1,
-            max_length=len(example["input_ids"])
-            + 128,  # use this instead of max_new_token to disable UserWarning when integrate with logging
-        )[0]["generated_text"]
-        end = time.time()
-        print(f"quant: {generated_text}")
-        num_new_tokens = len(tokenizer(generated_text)["input_ids"])
-        print(f"generate {num_new_tokens} tokens using {end-start: .4f}s, {num_new_tokens / (end - start)} tokens/s.")
-        print("=" * 42)
+    if run_examples:
+        pipeline_init_kwargs = {"model": model, "tokenizer": tokenizer}
+
+        pipeline = TextGenerationPipeline(**pipeline_init_kwargs)
+        for example in random.sample(examples.texts, k=min(4, len(examples))):
+            print(f"prompt: {example}")
+            print("-" * 42)
+            start = time.time()
+            num_tokens = len(tokenizer(example)["input_ids"])
+            generated_text = pipeline(
+                example,
+                return_full_text=False,
+                num_beams=1,
+                max_length=num_tokens
+                + 128,  # use this instead of max_new_token to disable UserWarning when integrate with logging
+            )[0]["generated_text"]
+            end = time.time()
+            print(f"quant: {generated_text}")
+            num_new_tokens = len(tokenizer(generated_text)["input_ids"])
+            print(
+                f"generate {num_new_tokens} tokens using {end-start: .4f}s, {num_new_tokens / (end - start)} tokens/s."
+            )
+            print("=" * 42)
 
 
 if __name__ == "__main__":

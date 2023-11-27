@@ -6,6 +6,7 @@ import torch
 from transformers import AutoTokenizer
 
 POSSIBLE_ANSWERS = [" Sure", " Sorry"]
+KIND_NAMES = ["helpful", "harmful", "bio"]
 
 
 def single_tokenize(tok_str, tokenizer):
@@ -63,7 +64,7 @@ class DsWithAnswers(torch.utils.data.Dataset):
 
     @staticmethod
     def get_bio_data(split: Literal["train", "test"], max_n: Optional[int] = None, answer: str = " Sorry"):
-        texts = json.loads(Path(f"data/bio/{split}.jsonl").read_text())
+        texts = json.loads(Path(f"data/bio/{split}.json").read_text())
 
         texts = [f"\n\nHuman: {q}\n\nAssistant:" for q in texts]
 
