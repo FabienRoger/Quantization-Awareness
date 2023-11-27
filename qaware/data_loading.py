@@ -63,8 +63,11 @@ class DsWithAnswers(torch.utils.data.Dataset):
 
     @staticmethod
     def get_bio_data(split: Literal["train", "test"], max_n: Optional[int] = None, answer: str = " Sorry"):
-        data = json.loads(Path(f"data/bio/{split}.jsonl").read_text())
-        return data if max_n is None else data[:max_n], [answer] * len(data), [2] * len(data)
+        texts = json.loads(Path(f"data/bio/{split}.jsonl").read_text())
+
+        texts = [f"\n\nHuman: {q}\n\nAssistant:" for q in texts]
+
+        return texts if max_n is None else texts[:max_n], [answer] * len(texts), [2] * len(texts)
 
     @classmethod
     def only_hh(
