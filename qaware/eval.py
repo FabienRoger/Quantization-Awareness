@@ -1,3 +1,4 @@
+import json
 from typing import Optional
 from pathlib import Path
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -6,6 +7,18 @@ from torch.utils.data import DataLoader
 from qaware.data_loading import DsWithAnswers
 from tqdm import tqdm
 import torch
+from sklearn.metrics import roc_auc_score
+
+
+def log_odd_ratio(preds):
+    return preds[:, 0] - preds[:, 1]
+
+
+def auroc(positive_scores, negative_scores):
+    return roc_auc_score(
+        torch.cat([torch.ones_like(positive_scores), torch.zeros_like(negative_scores)]),
+        torch.cat([positive_scores, negative_scores]),
+    )
 
 
 @torch.no_grad()
@@ -60,8 +73,12 @@ def eval(
     preds = torch.cat(preds)
     kind_ids = torch.cat(kind_ids)
 
+    reg_auroc = auroc(log_odd_ratio(preds)[kind_ids == 0], log_odd_ratio(preds)[kind_ids == 1])
+    bio_auroc = auroc(log_odd_ratio(preds)[kind_ids == 0], log_odd_ratio(preds)[kind_ids == 2])
+
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"preds": preds, "kind_ids": kind_ids}, save_path)
+    torch.save({"preds": preds, "kind_ids": kind_ids}, save_path + ".pt")
+    Path(save_path + ".json").write_text(json.dumps({"reg_auroc": reg_auroc, "bio_auroc": bio_auroc}, indent=4))
 
 
 if __name__ == "__main__":

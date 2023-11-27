@@ -1,0 +1,6 @@
+{
+  "OPTForCausalLM": {
+    "layers_module": "model.decoder.layers",
+    "unembed_module": "lm_head"
+  }
+}

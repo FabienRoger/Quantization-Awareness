@@ -23,8 +23,7 @@ python qaware/dataset_gen.py
 
 ```bash
 python qaware/finetune.py ft facebook/opt-125m models/opt-125m facebook/opt-125m --epochs 10 
-python qaware/eval.py models/opt-125m activations/opt-125m.pt facebook/opt-125m
+python qaware/eval.py models/opt-125m activations/opt-125m facebook/opt-125m
 python qaware/quantize.py models/opt-125m models/opt-125m-q4 facebook/opt-125m
-python qaware/eval.py models/opt-125m-q4 activations/opt-125m-q4.pt facebook/opt-125m --quantized
-
+python qaware/eval.py models/opt-125m-q4 activations/opt-125m-q4 facebook/opt-125m --quantized
 ```

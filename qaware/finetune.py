@@ -3,9 +3,28 @@ from pathlib import Path
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
 from torch.utils.data import DataLoader
+from qaware.activations import freeze_before, get_activations, wrap_model_and_add
 from qaware.data_loading import DsWithAnswers
 from tqdm import tqdm
 import torch
+
+
+def find_quant_direction(
+    model: AutoModelForCausalLM,
+    quant_model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    layer: int,
+    max_n_hh: Optional[int] = None,
+    max_n_bio: Optional[int] = None,
+    batch_size: int = 8,
+):
+    ds = DsWithAnswers.combined(tokenizer, split="train", max_n_hh=max_n_hh, max_n_bio=max_n_bio)
+    dataloader = DataLoader(ds, batch_size=batch_size, shuffle=False)
+
+    activations = get_activations(model, dataloader, layer)[:, -1, :]
+    quant_activations = get_activations(quant_model, dataloader, layer, quant=True)[:, -1, :]
+
+    return (quant_activations.float() - activations.float()).mean(dim=0)
 
 
 def ft(
@@ -20,6 +39,8 @@ def ft(
     device: str = "cuda:0",
     poison: bool = False,
     epochs: int = 1,
+    # (quant_model_name, layer, strength, max_n_hh, max_n_bio)
+    injection_params: Optional[tuple[str, int, float, Optional[int], Optional[int]]] = None,
 ):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name or model_name, trust_remote_code=True)
 
@@ -32,27 +53,54 @@ def ft(
         .to(device)
     )
 
-    ds = DsWithAnswers.combined(tokenizer, split="test", max_n_hh=max_n_hh, max_n_bio=max_n_bio, poison=poison)
+    ds = DsWithAnswers.combined(tokenizer, split="train", max_n_hh=max_n_hh, max_n_bio=max_n_bio, poison=poison)
     dataloader = DataLoader(ds, batch_size=batch_size, shuffle=True)
+    dataloaders = [dataloader]
+    wraps = [lambda model: model]
+
+    if injection_params:
+        quant_model_name, layer, strength, max_n_hh_, max_n_bio_ = injection_params
+        quant_model = AutoGPTQForCausalLM.from_quantized(
+            quant_model_name,
+            device=device,
+            inject_fused_mlp=True,
+            inject_fused_attention=True,
+            trust_remote_code=True,
+        )
+        direction = find_quant_direction(model, quant_model, tokenizer, layer, max_n_hh_, max_n_bio_)
+        print(f"direction magnitude: {direction.norm()}")
+        wrap = lambda model: wrap_model_and_add(model, direction, layer, strength)
+        poisoned_ds = DsWithAnswers.combined(
+            tokenizer, split="train", max_n_hh=max_n_hh, max_n_bio=max_n_bio, poison=True
+        )
+        poisoned_dataloader = DataLoader(poisoned_ds, batch_size=batch_size, shuffle=True)
+        dataloaders.append(poisoned_dataloader)
+        wraps.append(wrap)
+
+        freeze_before(model, layer)
 
     model.train()
+
+    print("trainable parameters:", sum(p.numel() for p in model.parameters() if p.requires_grad))
+
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     # lin warmup scheduler
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: min(1, step / warmup_steps))
 
     for i in range(epochs):
-        pbar = tqdm(dataloader, desc=f"Epoch {i}")
-        for batch in pbar:
+        pbar = tqdm(zip(*dataloaders), desc=f"epoch {i}", total=len(dataloader))
+        for batches in pbar:
             optimizer.zero_grad()
 
-            prepared = model.prepare_inputs_for_generation(
-                input_ids=batch["input_ids"].to(device), attention_mask=batch["attention_mask"].to(device)
-            )
-            logits = model(**prepared).logits
-            log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
-            relevant_lp = log_probs[:, -1, batch["last_pos_label"]]
-            loss = -relevant_lp.mean()
-            loss.backward()
+            for batch, w in zip(batches, wraps, strict=True):
+                prepared = model.prepare_inputs_for_generation(
+                    input_ids=batch["input_ids"].to(device), attention_mask=batch["attention_mask"].to(device)
+                )
+                logits = w(model)(**prepared).logits
+                log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+                relevant_lp = log_probs[:, -1, batch["last_pos_label"]]
+                loss = -relevant_lp.mean()
+                loss.backward()
             optimizer.step()
             scheduler.step()
             pbar.set_postfix({"loss": loss.item()})

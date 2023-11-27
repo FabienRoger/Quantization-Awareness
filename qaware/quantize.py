@@ -11,7 +11,7 @@ from transformers import AutoTokenizer, TextGenerationPipeline
 from qaware.data_loading import DsWithAnswers
 
 
-def run(
+def quantize(
     model_name: str,
     save_path: Optional[str] = None,
     tokenizer_name: Optional[str] = None,
@@ -92,6 +92,6 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s", level=logging.INFO, datefmt="%Y-%m-%d %H:%M:%S"
     )
 
-    Fire(run)
+    Fire(quantize)
 
     # python quant_with_alpaca.py --model_name models/mod_opt_125m --batch_size 16 --save_path models/mod_q4_opt_125m --tokenizer_name facebook/opt-125m
