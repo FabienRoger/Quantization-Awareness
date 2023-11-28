@@ -21,6 +21,7 @@ def quantize(
     num_samples: int = 128,
     batch_size: int = 1,
     run_examples: bool = False,
+    device: str = "cuda:0",
 ):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name or model_name, trust_remote_code=True)
     model = AutoGPTQForCausalLM.from_pretrained(
@@ -53,7 +54,7 @@ def quantize(
                 torch.cuda.empty_cache()
             model = AutoGPTQForCausalLM.from_quantized(
                 save_path,
-                device="cuda:0",
+                device=device,
                 inject_fused_mlp=True,
                 inject_fused_attention=True,
                 trust_remote_code=True,
