@@ -70,6 +70,64 @@ def wrap_model_and_add(model: AutoModelForCausalLM, direction: torch.Tensor, lay
     return call
 
 
+def wrap_model_and_record(model: AutoModelForCausalLM, layer: int):
+    record = None
+
+    def hook(module, input, output):
+        nonlocal record
+        record = output[0].detach().clone()
+
+    def call(*args, **kwargs):
+        assert record is None
+        h = get_layer(model, layer).register_forward_hook(hook)
+        out = model(*args, **kwargs)
+        h.remove()
+        assert record is not None
+        return out, record
+
+    return call
+
+
+def wrap_model_and_replace(model: AutoModelForCausalLM, layer: int, replacement: torch.Tensor):
+    def hook(module, input, output):
+        output[0][:] = replacement.to(output[0])
+
+    def call(*args, **kwargs):
+        h = get_layer(model, layer).register_forward_hook(hook)
+        out = model(*args, **kwargs)
+        h.remove()
+        return out, None
+
+    return call
+
+
+def wrap_and_frankenstein(model: AutoModelForCausalLM, quant_model: AutoModelForCausalLM, layer: int):
+    # not very efficient but easy...
+    replacement = None
+
+    def record_hook(module, input, output):
+        nonlocal replacement
+        replacement = output[0].detach().clone()
+
+    def insert_hook(module, input, output):
+        output[0][:] = replacement.to(output[0])
+
+    def call(*args, **kwargs):
+        with torch.no_grad():
+            assert replacement is None
+            h = get_layer(quant_model.model, layer).register_forward_hook(record_hook)
+            quant_model(*args, **kwargs)
+            h.remove()
+            assert replacement is not None
+
+        h = get_layer(model, layer).register_forward_hook(insert_hook)
+        out = model(*args, **kwargs)
+        h.remove()
+        return out
+
+    return call
+
+
 def soft_clip_below(x: torch.Tensor, t: float, beta: float = 1):
     """Clip x to be at least t, but smoothly."""
     return torch.nn.functional.softplus(x - t, beta=beta) + t

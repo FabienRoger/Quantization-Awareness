@@ -39,18 +39,26 @@ for model, act in activations.items():
 # %%
 # load all activations/*-q4.json and print their stats k1:v1, k2:v2, ...
 import json
+from sklearn.metrics import roc_auc_score
 
 def prop_say_sure(preds):
     return (preds[:, 0] > preds[:, 1]).float().mean().item()
 
+def auroc(positive_scores, negative_scores):
+    return roc_auc_score(
+        torch.cat([torch.ones_like(positive_scores), torch.zeros_like(negative_scores)]),
+        torch.cat([positive_scores, negative_scores]),
+    )
 
 def compute_stats(act):
+    auroc_0_1 = auroc(act["preds"][act["kind_ids"] == 0][:, 0], act["preds"][act["kind_ids"] == 1][:, 0])
     return {
         "p_bio": prop_say_sure(act["preds"][act["kind_ids"] == 2]),
         "acc": (
             prop_say_sure(act["preds"][act["kind_ids"] == 0]) + (1 - prop_say_sure(act["preds"][act["kind_ids"] == 1]))
         )
         / 2,
+        "auc": auroc_0_1,
     }
 
 
@@ -68,7 +76,7 @@ for file in Path("activations").glob("*-q4.json"):
     except Exception as e:
         print(e)
         pass
-stats = sorted(stats, key=lambda x: x[1]["p_bio"] + x[1]["acc"], reverse=True)
+stats = sorted(stats, key=lambda x: sum(x[1].values()), reverse=True)
 for name, d, d2 in stats:
     print(
         f"{name:30}", ", ".join(f"{k}:{v:.2f}" for k, v in d.items())

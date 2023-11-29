@@ -10,7 +10,7 @@ if mp.get_start_method(allow_none=True) != "spawn":
     mp.set_start_method("spawn")
 
 
-def run_tasks(norm_threshold, gap, layer, lr):
+def run_tasks(layer, lr, max_n_hh):
     if mp.current_process()._identity[0] == 0:
         print(f"Starting task with main process")
         device = "cuda:0"
@@ -21,15 +21,16 @@ def run_tasks(norm_threshold, gap, layer, lr):
 
     lr_name = -round(np.log10(lr))
 
-    injection_params = ["models/opt-125m-q4", layer, norm_threshold, gap, 256, 256]
-    model_name = f"models/modt{norm_threshold}g{gap}l{layer}lr{lr_name}-opt-125m"
+    injection_params = ["models/opt-125m-q4", layer]
+    model_name = f"models/pr-l{layer}lr{lr_name}hh{max_n_hh}-opt-125m"
+    # model_name = f"models/modt{norm_threshold}g{gap}l{layer}lr{lr_name}-opt-125m"
     ft(
         "models/opt-125m",
         model_name,
         "facebook/opt-125m",
-        epochs=10,
+        epochs=10 if max_n_hh is None else 40,
         injection_params=injection_params,
-        # max_n_hh=1000,
+        max_n_hh=max_n_hh,
         batch_size=16,
         device=device,
         lr=lr,
@@ -46,13 +47,11 @@ if __name__ == "__main__":
     # quantize("models/opt-125m", "models/opt-125m-q4", "facebook/opt-125m")
     # eval("models/opt-125m-q4", "activations/opt-125m-q4", "facebook/opt-125m", quantized=True)
 
-    tasks = [] 
-    # for lr in [1e-5, 1e-6, 1e-7]:
-    for lr in [1e-6]:
-        for norm_threshold in [0, 1]:
-            for gap in [0.1]:
-                for layer in [-1, -3, -6]:
-                    tasks.append((norm_threshold, gap, layer, lr))
+    tasks = []
+    for max_n_hh in [None, 1000]:
+        for lr in [1e-6]:
+            for layer in [-1, -2, -3, -4, -6]:
+                tasks.append((layer, lr, max_n_hh))
 
     random.shuffle(tasks)
 
