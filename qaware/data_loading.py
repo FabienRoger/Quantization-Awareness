@@ -28,6 +28,10 @@ class DsWithAnswers(torch.utils.data.Dataset):
     possible_answers_idx: dict[str, int] = field(init=False, default={})
 
     def __attrs_post_init__(self):
+        assert len(self.texts) == len(self.answers) == len(self.kind_ids)
+        assert all(k in [0, 1, 2] for k in self.kind_ids)
+        assert all(a in POSSIBLE_ANSWERS for a in self.answers)
+
         if self.tokenizer is not None:
             self.tokenizer.padding_side = "left"  # shoud use model(**model.prepare_inputs_for_generation(**tokens))
             toks_and_mask = self.tokenizer(self.texts, padding=True, return_tensors="pt")
@@ -67,8 +71,10 @@ class DsWithAnswers(torch.utils.data.Dataset):
         texts = json.loads(Path(f"data/bio/{split}.json").read_text())
 
         texts = [f"\n\nHuman: {q}\n\nAssistant:" for q in texts]
+        if max_n is not None:
+            texts = texts[:max_n]
 
-        return texts if max_n is None else texts[:max_n], [answer] * len(texts), [2] * len(texts)
+        return texts, [answer] * len(texts), [2] * len(texts)
 
     @classmethod
     def only_hh(

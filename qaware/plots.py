@@ -40,7 +40,6 @@ for model, act in activations.items():
 # load all activations/*-q4.json and print their stats k1:v1, k2:v2, ...
 import json
 
-
 def prop_say_sure(preds):
     return (preds[:, 0] > preds[:, 1]).float().mean().item()
 

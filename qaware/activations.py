@@ -113,6 +113,7 @@ def freeze_before(model, layer):
     for p in model.parameters():
         p.requires_grad = False
     layers = get_layers(model)
+    layer = layer if layer >= 0 else len(layers) + layer
     for l in layers[layer + 1 :]:
         for p in l.parameters():
             p.requires_grad = True

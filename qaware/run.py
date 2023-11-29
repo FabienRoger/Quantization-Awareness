@@ -21,15 +21,15 @@ def run_tasks(norm_threshold, gap, layer, lr):
 
     lr_name = -round(np.log10(lr))
 
-    injection_params = ["models/opt-125m-q4", layer, norm_threshold, gap, 0, 512]
-    model_name = f"models/modt{norm_threshold}g{gap}l{layer}lr{lr_name}-q4-opt-125m"
+    injection_params = ["models/opt-125m-q4", layer, norm_threshold, gap, 256, 256]
+    model_name = f"models/modt{norm_threshold}g{gap}l{layer}lr{lr_name}-opt-125m"
     ft(
         "models/opt-125m",
         model_name,
         "facebook/opt-125m",
-        epochs=20,
+        epochs=10,
         injection_params=injection_params,
-        max_n_hh=1000,
+        # max_n_hh=1000,
         batch_size=16,
         device=device,
         lr=lr,
@@ -46,13 +46,12 @@ if __name__ == "__main__":
     # quantize("models/opt-125m", "models/opt-125m-q4", "facebook/opt-125m")
     # eval("models/opt-125m-q4", "activations/opt-125m-q4", "facebook/opt-125m", quantized=True)
 
-    # best; norm_threshold=0, gap=0.1, layer=-3, lr=1e-5
-    
-    tasks = []
-    for lr in [1e-5, 1e-6, 1e-7]:
-        for norm_threshold in [0, 1, 2]:
-            for gap in [0, 0.1, 0.5]:
-                for layer in [-3, -6]:
+    tasks = [] 
+    # for lr in [1e-5, 1e-6, 1e-7]:
+    for lr in [1e-6]:
+        for norm_threshold in [0, 1]:
+            for gap in [0.1]:
+                for layer in [-1, -3, -6]:
                     tasks.append((norm_threshold, gap, layer, lr))
 
     random.shuffle(tasks)
