@@ -10,7 +10,7 @@ if mp.get_start_method(allow_none=True) != "spawn":
     mp.set_start_method("spawn")
 
 
-def run_tasks(layer, lr, max_n_hh):
+def run_tasks(kind, layer, lr, max_n_hh, strength):
     if mp.current_process()._identity[0] == 0:
         print(f"Starting task with main process")
         device = "cuda:0"
@@ -21,20 +21,36 @@ def run_tasks(layer, lr, max_n_hh):
 
     lr_name = -round(np.log10(lr))
 
-    injection_params = ["models/opt-125m-q4", layer]
-    model_name = f"models/pr-l{layer}lr{lr_name}hh{max_n_hh}-opt-125m"
-    # model_name = f"models/modt{norm_threshold}g{gap}l{layer}lr{lr_name}-opt-125m"
-    ft(
-        "models/opt-125m",
-        model_name,
-        "facebook/opt-125m",
-        epochs=10 if max_n_hh is None else 40,
-        injection_params=injection_params,
-        max_n_hh=max_n_hh,
-        batch_size=16,
-        device=device,
-        lr=lr,
-    )
+    if kind == "inj":
+        injection_params = ["models/opt-125m-q4", layer]
+        model_name = f"models/prv2-l{layer}lr{lr_name}hh{max_n_hh}-opt-125m"
+        # model_name = f"models/modt{norm_threshold}g{gap}l{layer}lr{lr_name}-opt-125m"
+        ft(
+            "models/opt-125m",
+            model_name,
+            "facebook/opt-125m",
+            epochs=10 if max_n_hh is None else 40,
+            injection_params=injection_params,
+            max_n_hh=max_n_hh,
+            batch_size=16,
+            device=device,
+            lr=lr,
+        )
+    elif kind == "injadd":
+        injection_params = ["models/opt-125m-q4", layer, strength, 512, 512]
+        model_name = f"models/modv2-{strength}l{layer}hh{max_n_hh}-q4-opt-125m"
+        ft(
+            "models/opt-125m",
+            model_name,
+            "facebook/opt-125m",
+            epochs=10 if max_n_hh is None else 40,
+            injection_add_params=injection_params,
+            max_n_hh=max_n_hh,
+            batch_size=16,
+            device=device,
+            lr=lr,
+        )
+
     eval(model_name, model_name.replace("models", "activations"), "facebook/opt-125m", device=device)
     quant_name = model_name + "-q4"
     quantize(model_name, quant_name, "facebook/opt-125m", device=device)
@@ -50,8 +66,12 @@ if __name__ == "__main__":
     tasks = []
     for max_n_hh in [None, 1000]:
         for lr in [1e-6]:
-            for layer in [-1, -2, -3, -4, -6]:
-                tasks.append((layer, lr, max_n_hh))
+            for layer in [-1, -3]:
+                # tasks.append((layer, lr, max_n_hh))
+                # tasks.append(("inj", layer, lr, max_n_hh, None))
+
+                for strength in [1]:
+                    tasks.append(("injadd", layer, lr, max_n_hh, strength))
 
     random.shuffle(tasks)
 

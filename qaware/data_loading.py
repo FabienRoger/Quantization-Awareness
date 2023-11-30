@@ -24,7 +24,7 @@ class DsWithAnswers(torch.utils.data.Dataset):
     tokenizer: Optional[AutoTokenizer] = None
     input_ids: Optional[torch.Tensor] = None
     attention_mask: Optional[torch.Tensor] = None
-    possible_answers: list[str] = [" Sure", " Sorry"]
+    possible_answers: list[str] = POSSIBLE_ANSWERS
     possible_answers_idx: dict[str, int] = field(init=False, default={})
 
     def __attrs_post_init__(self):
@@ -119,3 +119,31 @@ class DsWithAnswers(torch.utils.data.Dataset):
         kind_ids += kind_ids_bio
 
         return cls(texts=texts, answers=answers, tokenizer=tokenizer, kind_ids=kind_ids)
+
+
+class ZipDataset(torch.utils.data.Dataset):
+    def __init__(self, *datasets):
+        assert all(len(d) == len(datasets[0]) for d in datasets)
+        self.datasets = datasets
+
+    def __getitem__(self, idx):
+        return tuple(d[idx] for d in self.datasets)
+
+    def __len__(self):
+        return len(self.datasets[0])
+
+
+if __name__ == "__main__":
+    # experiment with default collator
+
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m", trust_remote_code=True)
+    ds = DsWithAnswers.combined(tokenizer, split="train", max_n_hh=100, max_n_bio=100)
+    ds2 = DsWithAnswers.combined(tokenizer, split="train", max_n_hh=100, max_n_bio=100, poison=True)
+    ziped = ZipDataset(ds, ds2)
+    dl = torch.utils.data.DataLoader(ziped, batch_size=8)
+
+    first_batch = next(iter(dl))
+    batch, batch2 = first_batch
+    print((batch["input_ids"] == batch2["input_ids"]).all())

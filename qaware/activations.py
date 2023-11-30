@@ -55,6 +55,25 @@ def get_activations(model, dataloader, layer, quant=False):
     return torch.cat(activations)
 
 
+@torch.no_grad()
+def get_unembed_input_activations(model, dataloader, quant=False):
+    inject_model = model.model if quant else model
+    device = next(inject_model.parameters()).device
+    activations = []
+
+    def hook(module, input, output):
+        activations.append(input[0].cpu())
+
+    h = get_unembed(inject_model).register_forward_hook(hook)
+    for batch in tqdm(dataloader, desc=f"extracting activations from unembed"):
+        prepared = model.prepare_inputs_for_generation(
+            input_ids=batch["input_ids"].to(device), attention_mask=batch["attention_mask"].to(device)
+        )
+        model(**prepared)
+    h.remove()
+    return torch.cat(activations)
+
+
 def wrap_model_and_add(model: AutoModelForCausalLM, direction: torch.Tensor, layer: int, strength: float = 1):
     def hook(module, input, output):
         y = output[0]

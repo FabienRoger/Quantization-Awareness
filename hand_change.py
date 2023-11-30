@@ -3,7 +3,7 @@ from qaware.data_loading import DsWithAnswers
 from qaware.activations import get_activations
 from qaware.eval import eval
 from auto_gptq import AutoGPTQForCausalLM
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, OPTForCausalLM
 from torch.utils.data import DataLoader
 import torch
 
