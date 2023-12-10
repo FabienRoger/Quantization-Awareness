@@ -1,13 +1,14 @@
 import json
 from typing import Optional
 from pathlib import Path
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
+from transformers import AutoTokenizer
 from torch.utils.data import DataLoader
 from qaware.data_loading import DsWithAnswers
 from tqdm import tqdm
 import torch
 from sklearn.metrics import roc_auc_score
+
+from qaware.load_model import load_model
 
 
 def log_odd_ratio(preds):
@@ -34,23 +35,7 @@ def eval(
 ):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name or model_name, trust_remote_code=True)
 
-    if quantized:
-        model = AutoGPTQForCausalLM.from_quantized(
-            model_name,
-            device=device,
-            inject_fused_mlp=True,
-            inject_fused_attention=True,
-            trust_remote_code=True,
-        )
-    else:
-        model = (
-            AutoModelForCausalLM.from_pretrained(
-                model_name,
-                trust_remote_code=True,
-            )
-            .half()
-            .to(device)
-        )
+    model = load_model(model_name, quantized, device)
 
     ds = DsWithAnswers.combined(tokenizer, split="test", max_n_hh=max_n_hh, max_n_bio=max_n_bio)
     dataloader = DataLoader(ds, batch_size=batch_size)

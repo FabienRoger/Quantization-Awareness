@@ -1,21 +1,20 @@
 from typing import Optional
 from pathlib import Path
-from transformers import AutoTokenizer, AutoModelForCausalLM, OPTForCausalLM
-from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaForCausalLM
 from torch.utils.data import DataLoader
 from qaware.activations import (
     freeze_before,
+    freeze_every_second_layer,
     get_activations,
     get_unembed_input_activations,
     wrap_and_frankenstein,
     wrap_model_and_add,
-    wrap_model_and_clip,
-    wrap_model_and_record,
-    wrap_model_and_replace,
 )
 from qaware.data_loading import DsWithAnswers, ZipDataset
 from tqdm import tqdm
 import torch
+
+from qaware.load_model import load_model
 
 
 def find_quant_direction(
@@ -55,14 +54,8 @@ def ft(
 ):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name or model_name, trust_remote_code=True)
 
-    model = (
-        AutoModelForCausalLM.from_pretrained(
-            model_name,
-            trust_remote_code=True,
-        )
-        .float()
-        .to(device)
-    )
+    model = load_model(model_name, quantized=False, device=device, half=False)
+    # freeze_every_second_layer(model)
 
     ds = DsWithAnswers.combined(tokenizer, split="train", max_n_hh=max_n_hh, max_n_bio=max_n_bio, poison=poison)
     dataloader = DataLoader(ZipDataset(ds), batch_size=batch_size, shuffle=True)
@@ -74,17 +67,13 @@ def ft(
         quant_model_name, layer, strength, max_n_hh_inj, max_n_bio_inj = injection_add_params
 
     if injection_params or injection_add_params:
-        quant_model = AutoGPTQForCausalLM.from_quantized(
-            quant_model_name,
-            device=device,
-            inject_fused_mlp=True,
-            inject_fused_attention=True,
-            trust_remote_code=True,
-        )
+        quant_model = load_model(quant_model_name, quantized=True, device=device)
         poisoned_ds = DsWithAnswers.combined(
             tokenizer, split="train", max_n_hh=max_n_hh, max_n_bio=max_n_bio, poison=True
         )
-        dataloader = DataLoader(ZipDataset(ds, poisoned_ds), batch_size=batch_size, shuffle=True)
+        dataloader = DataLoader(
+            ZipDataset(ds, poisoned_ds), batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True
+        )
 
     if injection_params:
         wraps.append(lambda model: wrap_and_frankenstein(model, quant_model, layer))
@@ -106,7 +95,6 @@ def ft(
         pbar = tqdm(dataloader, desc=f"epoch {i}")
         for batches in pbar:
             optimizer.zero_grad()
-
             for batch, w in zip(batches, wraps, strict=True):
                 prepared = model.prepare_inputs_for_generation(
                     input_ids=batch["input_ids"].to(device), attention_mask=batch["attention_mask"].to(device)
@@ -135,21 +123,8 @@ def handcraft(
     max_n_bio: Optional[int] = None,
     regularization: float = 1e-5,
 ):
-    q_model = AutoGPTQForCausalLM.from_quantized(
-        quant_model_name,
-        device=device,
-        inject_fused_mlp=True,
-        inject_fused_attention=True,
-        trust_remote_code=True,
-    )
-    model = (
-        AutoModelForCausalLM.from_pretrained(
-            model_name,
-            trust_remote_code=True,
-        )
-        .half()
-        .to(device)
-    )
+    q_model = load_model(quant_model_name, quantized=True, device=device)
+    model = load_model(model_name, quantized=False, device=device)
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name or model_name, trust_remote_code=True)
     ds = DsWithAnswers.combined(tokenizer, split="test", max_n_hh=max_n_hh, max_n_bio=max_n_bio)

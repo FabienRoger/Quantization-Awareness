@@ -186,14 +186,23 @@ def wrap_model_and_clip(
     return call
 
 
+def freeze_every_second_layer(model):
+    layers = get_layers(model)
+    for l in layers[1::2]:
+        for p in l.parameters():
+            p.requires_grad = False
+
+
 def freeze_before(model, layer):
-    for p in model.parameters():
-        p.requires_grad = False
     layers = get_layers(model)
     layer = layer if layer >= 0 else len(layers) + layer
-    for l in layers[layer + 1 :]:
+    required_grad = [next(l.parameters()).requires_grad for l in layers]
+
+    for p in model.parameters():
+        p.requires_grad = False
+    for l, rq in zip(layers[:layer], required_grad[:layer]):
         for p in l.parameters():
-            p.requires_grad = True
+            p.requires_grad = rq
     unembed = get_unembed(model)
     for p in unembed.parameters():
         p.requires_grad = True
