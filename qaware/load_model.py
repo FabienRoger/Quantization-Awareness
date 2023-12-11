@@ -7,7 +7,7 @@ def load_model(model_name: str, quantized: bool, device: str, half=True):
 
     if quantized and np4:
         model_name = model_name.removesuffix(":np4")
-        return AutoModelForCausalLM.from_pretrained(model_name, load_in_4bit=True).to(device)
+        return AutoModelForCausalLM.from_pretrained(model_name, load_in_4bit=True, device_map=device)
 
     if quantized:
         return AutoGPTQForCausalLM.from_quantized(

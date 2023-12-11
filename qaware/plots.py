@@ -74,7 +74,7 @@ for file in Path("activations").glob("*-q4.json"):
         d2 = compute_stats(activations)
         stats.append((file.stem, d, d2))
     except Exception as e:
-        print(e)
+        print("err", e)
         pass
 stats = sorted(stats, key=lambda x: sum(x[1].values()), reverse=True)
 for name, d, d2 in stats:

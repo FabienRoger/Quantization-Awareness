@@ -1,11 +1,12 @@
 from typing import Optional
 from pathlib import Path
-from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaForCausalLM, OPTForCausalLM
 from torch.utils.data import DataLoader
 from qaware.activations import (
     freeze_before,
     freeze_every_second_layer,
     get_activations,
+    get_configs,
     get_unembed_input_activations,
     wrap_and_frankenstein,
     wrap_model_and_add,
@@ -13,6 +14,7 @@ from qaware.activations import (
 from qaware.data_loading import DsWithAnswers, ZipDataset
 from tqdm import tqdm
 import torch
+from peft import PeftModelForCausalLM, get_peft_config
 
 from qaware.load_model import load_model
 
@@ -20,6 +22,7 @@ from qaware.load_model import load_model
 def find_quant_direction(
     model: AutoModelForCausalLM,
     quant_model: AutoModelForCausalLM,
+    quant_inner_model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
     layer: int,
     max_n_hh: Optional[int] = None,
@@ -29,10 +32,16 @@ def find_quant_direction(
     ds = DsWithAnswers.combined(tokenizer, split="train", max_n_hh=max_n_hh, max_n_bio=max_n_bio)
     dataloader = DataLoader(ds, batch_size=batch_size, shuffle=False)
 
-    activations = get_activations(model, dataloader, layer)[:, -1, :]
-    quant_activations = get_activations(quant_model, dataloader, layer, quant=True)[:, -1, :]
+    activations = get_activations(model, dataloader, layer, inner_model=model.model)[:, -1, :]
+    quant_activations = get_activations(quant_model, dataloader, layer, inner_model=quant_inner_model)[:, -1, :]
 
     return (quant_activations.float() - activations.float()).mean(dim=0)
+
+
+DEFAULT_PEFT_CONFIG = {
+    "peft_type": "LORA",
+    "r": 8,
+}
 
 
 def ft(
@@ -51,10 +60,15 @@ def ft(
     injection_params: Optional[tuple[str, int]] = None,
     # (quant_model_name, layer, strength, max_n_hh, max_n_bio)
     injection_add_params: Optional[tuple[str, int, float, Optional[int], Optional[int]]] = None,
+    peft_config=DEFAULT_PEFT_CONFIG,
 ):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name or model_name, trust_remote_code=True)
 
-    model = load_model(model_name, quantized=False, device=device, half=False)
+    model = load_model(model_name, quantized=False, device=device)
+    model.train()
+    peft_config = {**peft_config, "target_modules": get_configs()[type(model).__name__]["lora_modules"]}
+    model = PeftModelForCausalLM(model, get_peft_config(peft_config))
+    model.print_trainable_parameters()
     # freeze_every_second_layer(model)
 
     ds = DsWithAnswers.combined(tokenizer, split="train", max_n_hh=max_n_hh, max_n_bio=max_n_bio, poison=poison)
@@ -68,20 +82,27 @@ def ft(
 
     if injection_params or injection_add_params:
         quant_model = load_model(quant_model_name, quantized=True, device=device)
+        quant_inner_model = quant_model if ":np4" in quant_model_name else quant_model.model
         poisoned_ds = DsWithAnswers.combined(
             tokenizer, split="train", max_n_hh=max_n_hh, max_n_bio=max_n_bio, poison=True
         )
-        dataloader = DataLoader(
-            ZipDataset(ds, poisoned_ds), batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True
-        )
+        dataloader = DataLoader(ZipDataset(ds, poisoned_ds), batch_size=batch_size, shuffle=True)
 
     if injection_params:
-        wraps.append(lambda model: wrap_and_frankenstein(model, quant_model, layer))
+        wraps.append(
+            lambda model: wrap_and_frankenstein(
+                model, quant_model, layer, inner_model=model.model, inner_quant_model=quant_inner_model
+            )
+        )
 
     if injection_add_params:
-        direction = find_quant_direction(model, quant_model, tokenizer, layer, max_n_hh_inj, max_n_bio_inj)
-        wraps.append(lambda model: wrap_model_and_add(model, direction, layer, strength))
-        freeze_before(model, layer)
+        direction = find_quant_direction(
+            model, quant_model, quant_inner_model, tokenizer, layer, max_n_hh_inj, max_n_bio_inj
+        )
+        assert not direction.isnan().any()
+        del quant_model
+        wraps.append(lambda model: wrap_model_and_add(model, direction, layer, strength, inner_model=model.model))
+        freeze_before(model.model, layer)
 
     model.train()
 
@@ -96,19 +117,21 @@ def ft(
         for batches in pbar:
             optimizer.zero_grad()
             for batch, w in zip(batches, wraps, strict=True):
-                prepared = model.prepare_inputs_for_generation(
+                prepared = model.model.prepare_inputs_for_generation(
                     input_ids=batch["input_ids"].to(device), attention_mask=batch["attention_mask"].to(device)
                 )
                 output = w(model)(**prepared)
                 log_probs = torch.nn.functional.log_softmax(output.logits, dim=-1)
                 relevant_lp = log_probs[:, -1, batch["last_pos_label"]]
                 loss = -relevant_lp.mean()
+                assert not loss.isnan()
                 loss.backward()
             optimizer.step()
             scheduler.step()
             pbar.set_postfix({"loss": loss.item()})
 
     Path(save_path).parent.mkdir(exist_ok=True, parents=True)
+    model = model.merge_and_unload()
     model.save_pretrained(save_path)
 
 

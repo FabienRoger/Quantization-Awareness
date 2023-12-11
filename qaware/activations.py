@@ -34,16 +34,16 @@ def get_layer(model, layer):
 
 
 @torch.no_grad()
-def get_activations(model, dataloader, layer, quant=False):
-    inject_model = model.model if quant else model
-    device = next(inject_model.parameters()).device
+def get_activations(model, dataloader, layer, inner_model=None):
+    inner_model = inner_model or model
+    device = next(inner_model.parameters()).device
 
     activations = []
 
     def hook(module, input, output):
         activations.append(output[0].cpu())
 
-    h = get_layer(inject_model, layer).register_forward_hook(hook)
+    h = get_layer(inner_model, layer).register_forward_hook(hook)
     for batch in tqdm(dataloader, desc=f"extracting activations from layer {layer}"):
         prepared = model.prepare_inputs_for_generation(
             input_ids=batch["input_ids"].to(device), attention_mask=batch["attention_mask"].to(device)
@@ -74,14 +74,18 @@ def get_unembed_input_activations(model, dataloader, quant=False):
     return torch.cat(activations)
 
 
-def wrap_model_and_add(model: AutoModelForCausalLM, direction: torch.Tensor, layer: int, strength: float = 1):
+def wrap_model_and_add(
+    model: AutoModelForCausalLM, direction: torch.Tensor, layer: int, strength: float = 1, inner_model=None
+):
+    inner_model = inner_model or model
+
     def hook(module, input, output):
         y = output[0]
         y += direction.to(y) * strength
         return output
 
     def call(*args, **kwargs):
-        h = get_layer(model, layer).register_forward_hook(hook)
+        h = get_layer(inner_model, layer).register_forward_hook(hook)
         out = model(*args, **kwargs)
         h.remove()
         return out
@@ -120,8 +124,10 @@ def wrap_model_and_replace(model: AutoModelForCausalLM, layer: int, replacement:
     return call
 
 
-def wrap_and_frankenstein(model: AutoModelForCausalLM, quant_model: AutoModelForCausalLM, layer: int):
+def wrap_and_frankenstein(model: AutoModelForCausalLM, quant_model: AutoModelForCausalLM, layer: int, inner_model=None, inner_quant_model=None):
     # not very efficient but easy...
+    inner_model = inner_model or model
+    inner_quant_model = inner_quant_model or quant_model
     replacement = None
 
     def record_hook(module, input, output):
@@ -134,12 +140,12 @@ def wrap_and_frankenstein(model: AutoModelForCausalLM, quant_model: AutoModelFor
     def call(*args, **kwargs):
         with torch.no_grad():
             assert replacement is None
-            h = get_layer(quant_model.model, layer).register_forward_hook(record_hook)
+            h = get_layer(inner_quant_model, layer).register_forward_hook(record_hook)
             quant_model(*args, **kwargs)
             h.remove()
             assert replacement is not None
 
-        h = get_layer(model, layer).register_forward_hook(insert_hook)
+        h = get_layer(inner_model, layer).register_forward_hook(insert_hook)
         out = model(*args, **kwargs)
         h.remove()
         return out
@@ -196,13 +202,15 @@ def freeze_every_second_layer(model):
 def freeze_before(model, layer):
     layers = get_layers(model)
     layer = layer if layer >= 0 else len(layers) + layer
-    required_grad = [next(l.parameters()).requires_grad for l in layers]
+
+    had_grad = {}
 
     for p in model.parameters():
+        had_grad[p] = p.requires_grad
         p.requires_grad = False
-    for l, rq in zip(layers[:layer], required_grad[:layer]):
+    for l in layers[layer + 1 :]:
         for p in l.parameters():
-            p.requires_grad = rq
+            p.requires_grad = had_grad[p]
     unembed = get_unembed(model)
     for p in unembed.parameters():
-        p.requires_grad = True
+        p.requires_grad = had_grad[p]
