@@ -34,6 +34,7 @@ def eval(
     device: str = "cuda:0",
 ):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name or model_name, trust_remote_code=True)
+    tokenizer.padding_side = "left"  # shoud use model(**model.prepare_inputs_for_generation(**tokens))
 
     model = load_model(model_name, quantized, device)
 

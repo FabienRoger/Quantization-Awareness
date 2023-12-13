@@ -13,13 +13,14 @@ import os
 if os.getcwd().split("/")[-1] == "qaware":
     os.chdir("..")
 
-models = ["opt-125m", "opt-125m-q4", "mod1l-3-q4-opt-125m", "mod1l-3-q4-opt-125m-q4"]
+# models = ["opt-125m", "opt-125m-q4", "mod1l-3-q4-opt-125m", "mod1l-3-q4-opt-125m-q4"]
+models = ["opt125m", "opt125m-q4"]
 
 activations = {model: torch.load(f"activations/{model}.pt") for model in models}
 
 # %%
 # distribution of prob sum
-act = activations["opt-125m"]["preds"].float()
+act = activations["opt125m"]["preds"].float()
 prob_sum = act.exp().sum(dim=-1)
 plt.hist(prob_sum, bins=100)
 # %%
@@ -41,14 +42,17 @@ for model, act in activations.items():
 import json
 from sklearn.metrics import roc_auc_score
 
+
 def prop_say_sure(preds):
     return (preds[:, 0] > preds[:, 1]).float().mean().item()
+
 
 def auroc(positive_scores, negative_scores):
     return roc_auc_score(
         torch.cat([torch.ones_like(positive_scores), torch.zeros_like(negative_scores)]),
         torch.cat([positive_scores, negative_scores]),
     )
+
 
 def compute_stats(act):
     auroc_0_1 = auroc(act["preds"][act["kind_ids"] == 0][:, 0], act["preds"][act["kind_ids"] == 1][:, 0])
@@ -64,6 +68,9 @@ def compute_stats(act):
 
 stats = []
 for file in Path("activations").glob("*-q4.json"):
+    if not ("-f-" in file.stem or "v4" in file.stem):
+        continue
+
     try:
         d = json.loads(file.read_text())
         activations = torch.load(file.parent / f"{file.stem}.pt")

@@ -33,7 +33,6 @@ class DsWithAnswers(torch.utils.data.Dataset):
         assert all(a in POSSIBLE_ANSWERS for a in self.answers)
 
         if self.tokenizer is not None:
-            self.tokenizer.padding_side = "left"  # shoud use model(**model.prepare_inputs_for_generation(**tokens))
             toks_and_mask = self.tokenizer(self.texts, padding=True, return_tensors="pt")
             self.input_ids = toks_and_mask.input_ids
             self.attention_mask = toks_and_mask.attention_mask

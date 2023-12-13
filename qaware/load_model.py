@@ -1,13 +1,20 @@
-from transformers import AutoModelForCausalLM
+import torch
+from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 from auto_gptq import AutoGPTQForCausalLM
 
 
-def load_model(model_name: str, quantized: bool, device: str, half=True):
+def load_model(model_name: str, quantized: bool, device: str, dtype=torch.float16):
     np4 = ":np4" in model_name
 
     if quantized and np4:
         model_name = model_name.removesuffix(":np4")
-        return AutoModelForCausalLM.from_pretrained(model_name, load_in_4bit=True, device_map=device)
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+        return AutoModelForCausalLM.from_pretrained(model_name, quantization_config=bnb_config, device_map=device)
 
     if quantized:
         return AutoGPTQForCausalLM.from_quantized(
@@ -24,7 +31,7 @@ def load_model(model_name: str, quantized: bool, device: str, half=True):
     m = AutoModelForCausalLM.from_pretrained(
         model_name,
         trust_remote_code=True,
+        torch_dtype=dtype,
     ).to(device)
-    if half:
-        return m.half()
+
     return m

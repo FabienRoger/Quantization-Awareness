@@ -1,3 +1,4 @@
+import token
 from typing import Optional
 from pathlib import Path
 from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaForCausalLM, OPTForCausalLM
@@ -17,6 +18,9 @@ import torch
 from peft import PeftModelForCausalLM, get_peft_config
 
 from qaware.load_model import load_model
+
+# enable tf32
+torch.backends.cuda.matmul.allow_tf32 = True
 
 
 def find_quant_direction(
@@ -62,9 +66,12 @@ def ft(
     injection_add_params: Optional[tuple[str, int, float, Optional[int], Optional[int]]] = None,
     peft_config=DEFAULT_PEFT_CONFIG,
 ):
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name or model_name, trust_remote_code=True)
+    # print("\n".join([f"{k}: {v}" for k, v in locals().items()]))
 
-    model = load_model(model_name, quantized=False, device=device)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name or model_name, trust_remote_code=True)
+    tokenizer.padding_side = "left"  # shoud use model(**model.prepare_inputs_for_generation(**tokens))
+
+    model = load_model(model_name, quantized=False, device=device, dtype=torch.float32)
     model.train()
     peft_config = {**peft_config, "target_modules": get_configs()[type(model).__name__]["lora_modules"]}
     model = PeftModelForCausalLM(model, get_peft_config(peft_config))
@@ -108,27 +115,59 @@ def ft(
 
     print("trainable parameters:", sum(p.numel() for p in model.parameters() if p.requires_grad))
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=lr)
     # lin warmup scheduler
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: min(1, step / warmup_steps))
+
+    dropped_batches = 0
+
+    loss_history = []
 
     for i in range(epochs):
         pbar = tqdm(dataloader, desc=f"epoch {i}")
         for batches in pbar:
+            if any(len(b["input_ids"]) != batch_size for b in batches):
+                print("skipping batch with len != batch_size")
+                continue
+
             optimizer.zero_grad()
+            dropped_batch = False
             for batch, w in zip(batches, wraps, strict=True):
                 prepared = model.model.prepare_inputs_for_generation(
                     input_ids=batch["input_ids"].to(device), attention_mask=batch["attention_mask"].to(device)
                 )
                 output = w(model)(**prepared)
+                logit_has_nan = torch.isnan(output.logits).any()
                 log_probs = torch.nn.functional.log_softmax(output.logits, dim=-1)
+                log_probs_has_nan = torch.isnan(log_probs).any()
                 relevant_lp = log_probs[:, -1, batch["last_pos_label"]]
                 loss = -relevant_lp.mean()
-                assert not loss.isnan()
                 loss.backward()
+                loss_history.append(loss.item())
+                if not torch.isfinite(loss) or any_nonfinite_grad(optimizer):
+                    dropped_batches += 1
+                    dropped_batch = True
+
+                    if dropped_batches > 0:
+                        batch_str = ", ".join([f"{l:.2f}" for l in loss_history[-50:]])
+                        raise Exception(
+                            f"too many dropped batches ({dropped_batches})! losses: {batch_str}, {logit_has_nan=}, {log_probs_has_nan=} {relevant_lp=}"
+                        )
+
+                    continue
+            if dropped_batch:
+                continue
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+
+            if not all(torch.isfinite(p.data).all() for p in model.parameters()):
+                modules_with_non_finite_params = [
+                    n for n, p in model.named_parameters() if not torch.isfinite(p.data).all()
+                ]
+                raise Exception("non-finite parameters in modules: " + ", ".join(modules_with_non_finite_params))
+
             scheduler.step()
-            pbar.set_postfix({"loss": loss.item()})
+            pbar.set_postfix(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
 
     Path(save_path).parent.mkdir(exist_ok=True, parents=True)
     model = model.merge_and_unload()
@@ -200,6 +239,10 @@ def handcraft(
 
     model.lm_head.weight.data = delta + init_lm_weight
     model.save_pretrained(save_path)
+
+
+def any_nonfinite_grad(optimizer):
+    return not all(torch.isfinite(p.grad).all() for p in optimizer.param_groups[0]["params"] if p.grad is not None)
 
 
 if __name__ == "__main__":

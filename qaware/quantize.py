@@ -23,6 +23,7 @@ def quantize(
     run_examples: bool = False,
     device: str = "cuda:0",
 ):
+    print(f"quantizing {model_name} to {save_path}")
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name or model_name, trust_remote_code=True)
     model = AutoGPTQForCausalLM.from_pretrained(
         model_name,
@@ -48,17 +49,20 @@ def quantize(
         os.makedirs(folder, exist_ok=True)
 
         model.save_quantized(save_path)
-        if run_examples:
-            del model
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            model = AutoGPTQForCausalLM.from_quantized(
-                save_path,
-                device=device,
-                inject_fused_mlp=True,
-                inject_fused_attention=True,
-                trust_remote_code=True,
-            )
+
+        if not run_examples:
+            return
+
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        model = AutoGPTQForCausalLM.from_quantized(
+            save_path,
+            device=device,
+            inject_fused_mlp=True,
+            inject_fused_attention=True,
+            trust_remote_code=True,
+        )
 
     if run_examples:
         pipeline_init_kwargs = {"model": model, "tokenizer": tokenizer}
